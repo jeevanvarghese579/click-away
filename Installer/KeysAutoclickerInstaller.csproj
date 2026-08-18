@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWPF>true</UseWPF><PublishSingleFile>true</PublishSingleFile><SelfContained>true</SelfContained><RuntimeIdentifier>win-x64</RuntimeIdentifier><AssemblyName>Keys Autoclicker Installer</AssemblyName><ApplicationIcon>..\KeysAutoclicker\keyboard-automation.ico</ApplicationIcon></PropertyGroup>
+ <ItemGroup><EmbeddedResource Include="..\Release\Keys Autoclicker.exe" LogicalName="KeysAutoclicker.exe" /></ItemGroup>
+</Project>

@@ -1,0 +1,10 @@
+KeysAutoclicker/bin/
+KeysAutoclicker/obj/
+Release/
+portable/
+
+Installer/obj/
+ClickAway/ClickAway.pdb
+ClickAway/Data/clickaway.log
+ClickAway/Data/settings.json
+ClickAway/
