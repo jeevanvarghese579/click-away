@@ -2,6 +2,8 @@ using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Navigation;
+using System.Diagnostics;
 using Button = System.Windows.Controls.Button;
 using TextBox = System.Windows.Controls.TextBox;
 
@@ -87,6 +89,11 @@ public partial class MainWindow : Window
     {
         if (!int.TryParse(KeyDelayInput.Text, out keyDelay) || keyDelay < 0 || !int.TryParse(ShortcutDelayInput.Text, out shortcutDelay) || shortcutDelay < 0) { shortcutDelay = 0; StatusText.Text = "Playback delays must be zero or more milliseconds."; return false; }
         _settings.NormalKeyDelayMs = keyDelay; _settings.ShortcutDelayMs = shortcutDelay; return true;
+    }
+    void Website_RequestNavigate(object s, RequestNavigateEventArgs e)
+    {
+        Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+        e.Handled = true;
     }
     void Window_Closing(object s, System.ComponentModel.CancelEventArgs e) { _recorder?.Dispose(); _sequenceRecorder?.Dispose(); ReadPlaybackDelays(out _, out _); KeyboardSender.ReleaseModifiers(); SettingsStore.Save(_settings); _hotkeys?.Dispose(); _tray?.Dispose(); }
 }
