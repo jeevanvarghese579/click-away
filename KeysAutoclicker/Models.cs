@@ -52,5 +52,8 @@ public sealed class AppSettings
     public bool DarkTheme { get; set; } = true;
     public int NormalKeyDelayMs { get; set; } = 55;
     public int ShortcutDelayMs { get; set; } = 100;
+    public string StartStopRecordingShortcut { get; set; } = "Ctrl+Shift+F9";
+    public string PauseResumeRecordingShortcut { get; set; } = "Ctrl+Shift+F10";
+    public string EmergencyStopShortcut { get; set; } = "Ctrl+Shift+F12";
     public ObservableCollection<Profile> Profiles { get; set; } = new();
 }

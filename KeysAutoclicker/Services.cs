@@ -87,28 +87,29 @@ public sealed class ShortcutRecorder : IDisposable
 public sealed class SequenceRecorder : IDisposable
 {
     const int HookType = 13, KeyDown = 0x0100, SysKeyDown = 0x0104, KeyUp = 0x0101, SysKeyUp = 0x0105, Injected = 0x10;
-    readonly Action<string> _recorded; readonly Action _stopped; readonly HookProc _callback; readonly HashSet<uint> _down = new(); IntPtr _hook;
+    readonly Action<string> _recorded; readonly Action _stopped; readonly Func<string, bool>? _ignore; readonly bool _suppress; readonly HookProc _callback; readonly HashSet<uint> _down = new(); IntPtr _hook;
     delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);
     [StructLayout(LayoutKind.Sequential)] struct Kbd { public uint vkCode, scanCode, flags, time; public IntPtr dwExtraInfo; }
     [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SetWindowsHookEx(int type, HookProc callback, IntPtr module, uint threadId);
     [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
     [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string? name);
-    public SequenceRecorder(Action<string> recorded, Action stopped) { _recorded = recorded; _stopped = stopped; _callback = Hook; _hook = SetWindowsHookEx(HookType, _callback, GetModuleHandle(null), 0); }
+    public SequenceRecorder(Action<string> recorded, Action stopped, bool suppress = true, Func<string, bool>? ignore = null) { _recorded = recorded; _stopped = stopped; _suppress = suppress; _ignore = ignore; _callback = Hook; _hook = SetWindowsHookEx(HookType, _callback, GetModuleHandle(null), 0); }
     public bool IsActive => _hook != IntPtr.Zero;
     IntPtr Hook(int code, IntPtr message, IntPtr data)
     {
         if (code < 0 || _hook == IntPtr.Zero) return CallNextHookEx(_hook, code, message, data);
         var info = Marshal.PtrToStructure<Kbd>(data); if ((info.flags & Injected) != 0) return CallNextHookEx(_hook, code, message, data);
         var type = message.ToInt32();
-        if (type is KeyUp or SysKeyUp) { _down.Remove(info.vkCode); return new IntPtr(1); }
-        if (type is not (KeyDown or SysKeyDown)) return new IntPtr(1);
-        if (info.vkCode == 0x1B) { Dispose(); _stopped(); return new IntPtr(1); } // Esc ends a sequence
-        if (!_down.Add(info.vkCode)) return new IntPtr(1);
+        if (type is KeyUp or SysKeyUp) { _down.Remove(info.vkCode); return Next(code, message, data); }
+        if (type is not (KeyDown or SysKeyDown)) return Next(code, message, data);
+        if (info.vkCode == 0x1B) { Dispose(); _stopped(); return Next(code, message, data); } // Esc ends a sequence
+        if (!_down.Add(info.vkCode)) return Next(code, message, data);
         var text = KeyNotation.Format(KeyInterop.KeyFromVirtualKey((int)info.vkCode), Modifiers());
-        if (!string.IsNullOrEmpty(text)) _recorded(text);
-        return new IntPtr(1);
+        if (!string.IsNullOrEmpty(text) && !(_ignore?.Invoke(text) ?? false)) _recorded(text);
+        return Next(code, message, data);
     }
+    IntPtr Next(int code, IntPtr message, IntPtr data) => _suppress ? new IntPtr(1) : CallNextHookEx(_hook, code, message, data);
     ModifierKeys Modifiers()
     {
         ModifierKeys result = ModifierKeys.None;
@@ -124,30 +125,30 @@ public sealed class SequenceRecorder : IDisposable
 public sealed class GlobalHotkeys : IDisposable
 {
     const int WmHotkey = 0x0312;
-    readonly HwndSource _source; readonly Action<Macro> _action; readonly Dictionary<int, Macro> _registered = new(); int _nextId = 1000;
+    readonly HwndSource _source; readonly Action<Macro> _action; readonly Dictionary<int, Action> _registered = new(); int _nextId = 1000;
     [DllImport("user32.dll", SetLastError = true)] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
     [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     public GlobalHotkeys(Window window, Action<Macro> action)
     {
         _action = action; _source = (HwndSource)PresentationSource.FromVisual(window)!; _source.AddHook(WndProc);
     }
-    public List<string> Register(IEnumerable<Macro> macros)
+    public List<string> Register(IEnumerable<Macro> macros, IReadOnlyDictionary<string, Action>? controls = null)
     {
         foreach (var id in _registered.Keys) UnregisterHotKey(_source.Handle, id); _registered.Clear(); _nextId = 1000;
         var errors = new List<string>();
-        foreach (var macro in macros)
+        foreach (var item in (controls ?? new Dictionary<string, Action>()).Select(x => (Shortcut: x.Key, Name: "Click Away control", Action: x.Value)).Concat(macros.Select(m => (Shortcut: m.Trigger, Name: m.Name, Action: (Action)(() => _action(m))))))
         {
-            if (!KeyNotation.TryParse(macro.Trigger, out var modifiers, out var key)) { errors.Add($"{macro.Name}: invalid trigger"); continue; }
+            if (!KeyNotation.TryParse(item.Shortcut, out var modifiers, out var key)) { errors.Add($"{item.Name}: invalid shortcut"); continue; }
             var id = _nextId++;
             var vk = (uint)KeyInterop.VirtualKeyFromKey(key);
-            if (!RegisterHotKey(_source.Handle, id, modifiers, vk)) { var error = Marshal.GetLastWin32Error(); errors.Add($"{macro.Trigger} is unavailable (already used by Windows or another app)."); Diagnostics.Write($"REGISTER FAILED trigger={macro.Trigger} vk={vk} error={error}"); }
-            else { _registered[id] = macro; Diagnostics.Write($"REGISTERED trigger={macro.Trigger} id={id} vk={vk}"); }
+            if (!RegisterHotKey(_source.Handle, id, modifiers, vk)) { var error = Marshal.GetLastWin32Error(); errors.Add($"{item.Shortcut} is unavailable (already used by Windows or another app)."); Diagnostics.Write($"REGISTER FAILED shortcut={item.Shortcut} vk={vk} error={error}"); }
+            else { _registered[id] = item.Action; Diagnostics.Write($"REGISTERED shortcut={item.Shortcut} id={id} vk={vk}"); }
         }
         return errors;
     }
     IntPtr WndProc(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (message == WmHotkey && _registered.TryGetValue(wParam.ToInt32(), out var macro)) { Diagnostics.Write($"HOTKEY RECEIVED id={wParam} macro={macro.Name}"); _action(macro); handled = true; }
+        if (message == WmHotkey && _registered.TryGetValue(wParam.ToInt32(), out var action)) { Diagnostics.Write($"HOTKEY RECEIVED id={wParam}"); action(); handled = true; }
         return IntPtr.Zero;
     }
     public void Dispose() { foreach (var id in _registered.Keys) UnregisterHotKey(_source.Handle, id); _source.RemoveHook(WndProc); }
@@ -177,8 +178,13 @@ public static class KeyboardSender
 
 public sealed class TrayStatusIcon : IDisposable
 {
-    readonly Forms.NotifyIcon _icon; readonly Window _window;
-    public TrayStatusIcon(Window window, bool enabled) { _window = window; var menu = new Forms.ContextMenuStrip(); menu.Items.Add("Show Click Away", null, (_, _) => ShowWindow()); menu.Items.Add("Exit", null, (_, _) => _window.Dispatcher.Invoke(_window.Close)); _icon = new Forms.NotifyIcon { ContextMenuStrip = menu, Visible = true }; _icon.DoubleClick += (_, _) => ShowWindow(); SetMasterState(enabled); }
+    readonly Forms.NotifyIcon _icon; readonly Window _window; readonly Action _exit;
+    public TrayStatusIcon(Window window, bool enabled, Action exit) { _window = window; _exit = exit; var menu = new Forms.ContextMenuStrip(); menu.Items.Add("Show Click Away", null, (_, _) => ShowWindow()); menu.Items.Add("Exit", null, (_, _) => _exit()); _icon = new Forms.NotifyIcon { ContextMenuStrip = menu, Visible = true }; _icon.DoubleClick += (_, _) => ShowWindow(); SetMasterState(enabled); }
+    public void SetRecording(bool recording)
+    {
+        _icon.Icon?.Dispose(); _icon.Icon = CreateIcon(recording ? Drawing.Color.FromArgb(220, 62, 72) : Drawing.Color.FromArgb(42, 164, 96));
+        _icon.Text = recording ? "Click Away - Recording" : "Click Away - ON";
+    }
     public void SetMasterState(bool enabled) { _icon.Icon?.Dispose(); _icon.Icon = CreateIcon(enabled ? Drawing.Color.FromArgb(42, 164, 96) : Drawing.Color.FromArgb(190, 65, 72)); _icon.Text = enabled ? "Click Away — ON" : "Click Away — OFF"; }
     void ShowWindow() => _window.Dispatcher.Invoke(() => { _window.Show(); _window.WindowState = WindowState.Normal; _window.Activate(); });
     static Drawing.Icon CreateIcon(Drawing.Color color) { using var b = new Drawing.Bitmap(32,32); using var g = Drawing.Graphics.FromImage(b); g.Clear(Drawing.Color.Transparent); using var brush = new Drawing.SolidBrush(color); using var pen = new Drawing.Pen(Drawing.Color.White,2); g.FillEllipse(brush,3,3,26,26); g.DrawEllipse(pen,3,3,26,26); using var h = Drawing.Icon.FromHandle(b.GetHicon()); return (Drawing.Icon)h.Clone(); }
