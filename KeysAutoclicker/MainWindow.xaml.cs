@@ -10,7 +10,7 @@ using TextBox = System.Windows.Controls.TextBox;
 namespace KeysAutoclicker;
 public partial class MainWindow : Window
 {
-    AppSettings _settings = new(); GlobalHotkeys? _hotkeys; TrayStatusIcon? _tray; ShortcutRecorder? _recorder; SequenceRecorder? _sequenceRecorder; Macro? _recordingMacro; int _recordedCount; bool _recordingPaused, _allowClose; CancellationTokenSource? _playbackCancellation; readonly SemaphoreSlim _runner = new(1, 1);
+    AppSettings _settings = new(); GlobalHotkeys? _hotkeys; TrayStatusIcon? _tray; ShortcutRecorder? _recorder; SequenceRecorder? _sequenceRecorder; Macro? _recordingMacro, _recordingTarget; int _recordedCount; bool _recordingPaused, _allowClose; CancellationTokenSource? _playbackCancellation; readonly SemaphoreSlim _runner = new(1, 1);
     public ObservableCollection<Profile> Profiles => _settings.Profiles;
     public Profile? SelectedProfile { get; set; }
     public MainWindow() => InitializeComponent();
@@ -58,6 +58,7 @@ public partial class MainWindow : Window
     void RecordSequence_Click(object s, RoutedEventArgs e)
     {
         if ((s as FrameworkElement)?.DataContext is not Macro macro) return;
+        _recordingTarget = macro; BeginRecording(macro); if (_sequenceRecorder is not null) return;
         _recorder?.Dispose(); _sequenceRecorder?.Dispose(); _recordedCount = 0;
         StatusText.Text = "Recording actions — press Esc to stop. Keys will not affect other apps while recording.";
         _sequenceRecorder = new SequenceRecorder(text => Dispatcher.BeginInvoke(() =>
@@ -70,11 +71,24 @@ public partial class MainWindow : Window
     void StartStopRecording_Click(object s, RoutedEventArgs e) => ToggleGlobalRecording();
     void PauseResumeRecording_Click(object s, RoutedEventArgs e) => ToggleRecordingPause();
     void CancelRecording_Click(object s, RoutedEventArgs e) => FinishGlobalRecording(true);
+    void BeginRecording(Macro macro)
+    {
+        _recordingMacro = macro; _recordingTarget = macro; _recorder?.Dispose(); _sequenceRecorder?.Dispose(); _recordedCount = 0; _recordingPaused = false;
+        _sequenceRecorder = new SequenceRecorder(text => Dispatcher.BeginInvoke(() =>
+        {
+            if (_recordingPaused) return;
+            macro.Actions.Add(CreateRecordedStep(text)); _recordedCount++;
+            StatusText.Text = $"Recording - {_recordedCount} event(s). {DisplayShortcut(_settings.StartStopRecordingShortcut)} to stop.";
+        }), () => Dispatcher.BeginInvoke(() => FinishGlobalRecording(false)), suppress: false, ignore: IsRecordingControlShortcut);
+        if (!_sequenceRecorder.IsActive) { _recordingMacro = null; _sequenceRecorder = null; StatusText.Text = "Could not start recording."; return; }
+        _tray?.SetRecording(true); StatusText.Text = $"Recording - 0 event(s). {DisplayShortcut(_settings.StartStopRecordingShortcut)} to stop.";
+    }
     void ToggleGlobalRecording()
     {
         if (_sequenceRecorder is not null) { FinishGlobalRecording(false); return; }
-        if (SelectedProfile is null) { StatusText.Text = "Select a profile before recording."; return; }
-        var macro = new Macro { Name = "Recorded macro", Trigger = "" }; _recordingMacro = macro; SelectedProfile.Macros.Add(macro);
+        var macro = _recordingTarget ?? SelectedProfile?.Macros.FirstOrDefault();
+        if (macro is null) { StatusText.Text = "Create or select a shortcut before recording."; return; }
+        BeginRecording(macro); if (_sequenceRecorder is not null) return;
         _recorder?.Dispose(); _recordedCount = 0; _recordingPaused = false;
         _sequenceRecorder = new SequenceRecorder(text => Dispatcher.BeginInvoke(() =>
         {
@@ -82,7 +96,7 @@ public partial class MainWindow : Window
             macro.Actions.Add(CreateRecordedStep(text)); _recordedCount++;
             StatusText.Text = $"Recording - {_recordedCount} event(s). {DisplayShortcut(_settings.StartStopRecordingShortcut)} to stop.";
         }), () => Dispatcher.BeginInvoke(() => FinishGlobalRecording(false)), suppress: false, ignore: IsRecordingControlShortcut);
-        if (!_sequenceRecorder.IsActive) { SelectedProfile.Macros.Remove(macro); _recordingMacro = null; _sequenceRecorder = null; StatusText.Text = "Could not start recording."; return; }
+        if (!_sequenceRecorder.IsActive) { _recordingMacro = null; _sequenceRecorder = null; StatusText.Text = "Could not start recording."; return; }
         _tray?.SetRecording(true); StatusText.Text = $"Recording - 0 event(s). {DisplayShortcut(_settings.StartStopRecordingShortcut)} to stop.";
     }
     void ToggleRecordingPause()
@@ -94,7 +108,6 @@ public partial class MainWindow : Window
     void FinishGlobalRecording(bool cancel)
     {
         var recorder = _sequenceRecorder; _sequenceRecorder = null; recorder?.Dispose(); _recordingPaused = false; _tray?.SetRecording(false);
-        if (cancel && _recordingMacro is not null) { foreach (var profile in Profiles.Where(p => p.Macros.Contains(_recordingMacro)).ToList()) profile.Macros.Remove(_recordingMacro); }
         _recordingMacro = null;
         StatusText.Text = cancel ? "Recording cancelled." : $"Recording stopped - {_recordedCount} action(s) ready to review and edit.";
     }
