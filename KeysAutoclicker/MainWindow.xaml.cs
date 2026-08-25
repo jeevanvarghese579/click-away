@@ -16,7 +16,7 @@ public partial class MainWindow : Window
     public MainWindow() => InitializeComponent();
     void Window_Loaded(object s, RoutedEventArgs e)
     {
-        _settings = SettingsStore.Load(); if (Profiles.Count == 0) Seed(); DataContext = this; ProfileList.SelectedIndex = 0; MasterToggle.IsChecked = _settings.MasterEnabled; ThemeToggle.IsChecked = _settings.DarkTheme; KeyDelayInput.Text = _settings.NormalKeyDelayMs.ToString(); ShortcutDelayInput.Text = _settings.ShortcutDelayMs.ToString(); ApplyTheme(_settings.DarkTheme);
+        _settings = SettingsStore.Load(); if (Profiles.Count == 0) Seed(); DataContext = this; ProfileList.SelectedIndex = 0; MasterToggle.IsChecked = _settings.MasterEnabled; ThemeToggle.IsChecked = _settings.DarkTheme; KeyDelayInput.Text = _settings.NormalKeyDelayMs.ToString(); ShortcutDelayInput.Text = _settings.ShortcutDelayMs.ToString(); MouseMoveDelayInput.Text = _settings.MouseMoveDelayMs.ToString(); MouseClickDelayInput.Text = _settings.MouseClickDelayMs.ToString(); ApplyTheme(_settings.DarkTheme);
         StartStopShortcutInput.Text = _settings.StartStopRecordingShortcut; PauseResumeShortcutInput.Text = _settings.PauseResumeRecordingShortcut; EmergencyStopShortcutInput.Text = _settings.EmergencyStopShortcut;
         _tray = new TrayStatusIcon(this, _settings.MasterEnabled, ExitApplication); _hotkeys = new GlobalHotkeys(this, macro => _ = RunMacro(macro)); RefreshRegistry();
     }
@@ -212,14 +212,14 @@ public partial class MainWindow : Window
     async Task RunMacro(Macro macro)
     {
         if (!_settings.MasterEnabled || !Profiles.Any(p=>p.Enabled&&p.Macros.Contains(macro)&&macro.Enabled)) return;
-        if (!ReadPlaybackDelays(out var keyDelay, out var shortcutDelay)) return;
-        await _runner.WaitAsync(); _playbackCancellation = new(); try { Diagnostics.Write($"MACRO START name={macro.Name}"); await Dispatcher.InvokeAsync(()=>StatusText.Text=$"Running {macro.Name}..."); foreach(var step in macro.Actions.ToList()) { _playbackCancellation.Token.ThrowIfCancellationRequested(); if(step.Kind=="Delay") await Task.Delay(step.DelayMs, _playbackCancellation.Token); else for(var i=0;i<step.Repeat;i++) { _playbackCancellation.Token.ThrowIfCancellationRequested(); if (step.Kind.StartsWith("Mouse", StringComparison.Ordinal)) MouseSender.Execute(step); else KeyboardSender.Press(step.Value); await Task.Delay(step.Value.Contains('+') ? shortcutDelay : keyDelay, _playbackCancellation.Token); } } Diagnostics.Write($"MACRO COMPLETE name={macro.Name}"); await Dispatcher.InvokeAsync(()=>StatusText.Text=$"Completed {macro.Name}."); } catch (OperationCanceledException) { await Dispatcher.InvokeAsync(()=>StatusText.Text="Macro stopped safely."); } catch (Exception ex) { Diagnostics.Write($"MACRO ERROR {ex}"); KeyboardSender.ReleaseModifiers(); await Dispatcher.InvokeAsync(()=>StatusText.Text="Macro stopped safely."); } finally { KeyboardSender.ReleaseModifiers(); _playbackCancellation?.Dispose(); _playbackCancellation = null; _runner.Release(); }
+        if (!ReadPlaybackDelays(out var keyDelay, out var shortcutDelay, out var mouseMoveDelay, out var mouseClickDelay)) return;
+        await _runner.WaitAsync(); _playbackCancellation = new(); try { Diagnostics.Write($"MACRO START name={macro.Name}"); await Dispatcher.InvokeAsync(()=>StatusText.Text=$"Running {macro.Name}..."); foreach(var step in macro.Actions.ToList()) { _playbackCancellation.Token.ThrowIfCancellationRequested(); if(step.Kind=="Delay") await Task.Delay(step.DelayMs, _playbackCancellation.Token); else for(var i=0;i<step.Repeat;i++) { _playbackCancellation.Token.ThrowIfCancellationRequested(); var delay = step.Kind == "Mouse Move" ? mouseMoveDelay : step.Kind.StartsWith("Mouse", StringComparison.Ordinal) ? mouseClickDelay : step.Value.Contains('+') ? shortcutDelay : keyDelay; if (step.Kind.StartsWith("Mouse", StringComparison.Ordinal)) MouseSender.Execute(step); else KeyboardSender.Press(step.Value); await Task.Delay(delay, _playbackCancellation.Token); } } Diagnostics.Write($"MACRO COMPLETE name={macro.Name}"); await Dispatcher.InvokeAsync(()=>StatusText.Text=$"Completed {macro.Name}."); } catch (OperationCanceledException) { await Dispatcher.InvokeAsync(()=>StatusText.Text="Macro stopped safely."); } catch (Exception ex) { Diagnostics.Write($"MACRO ERROR {ex}"); KeyboardSender.ReleaseModifiers(); await Dispatcher.InvokeAsync(()=>StatusText.Text="Macro stopped safely."); } finally { KeyboardSender.ReleaseModifiers(); _playbackCancellation?.Dispose(); _playbackCancellation = null; _runner.Release(); }
     }
     void EmergencyStop() { _playbackCancellation?.Cancel(); KeyboardSender.ReleaseModifiers(); StatusText.Text = "Emergency stop - playback cancelled."; }
-    bool ReadPlaybackDelays(out int keyDelay, out int shortcutDelay)
+    bool ReadPlaybackDelays(out int keyDelay, out int shortcutDelay, out int mouseMoveDelay, out int mouseClickDelay)
     {
-        if (!int.TryParse(KeyDelayInput.Text, out keyDelay) || keyDelay < 0 || !int.TryParse(ShortcutDelayInput.Text, out shortcutDelay) || shortcutDelay < 0) { shortcutDelay = 0; StatusText.Text = "Playback delays must be zero or more milliseconds."; return false; }
-        _settings.NormalKeyDelayMs = keyDelay; _settings.ShortcutDelayMs = shortcutDelay; return true;
+        mouseMoveDelay = mouseClickDelay = 0; if (!int.TryParse(KeyDelayInput.Text, out keyDelay) || keyDelay < 0 || !int.TryParse(ShortcutDelayInput.Text, out shortcutDelay) || shortcutDelay < 0 || !int.TryParse(MouseMoveDelayInput.Text, out mouseMoveDelay) || mouseMoveDelay < 0 || !int.TryParse(MouseClickDelayInput.Text, out mouseClickDelay) || mouseClickDelay < 0) { shortcutDelay = 0; StatusText.Text = "Playback delays must be zero or more milliseconds."; return false; }
+        _settings.NormalKeyDelayMs = keyDelay; _settings.ShortcutDelayMs = shortcutDelay; _settings.MouseMoveDelayMs = mouseMoveDelay; _settings.MouseClickDelayMs = mouseClickDelay; return true;
     }
     void Website_RequestNavigate(object s, RequestNavigateEventArgs e)
     {
@@ -230,7 +230,7 @@ public partial class MainWindow : Window
     void Window_Closing(object s, System.ComponentModel.CancelEventArgs e)
     {
         if (!_allowClose) { e.Cancel = true; Hide(); StatusText.Text = "Click Away is running in the tray."; return; }
-        _recorder?.Dispose(); _sequenceRecorder?.Dispose(); ReadPlaybackDelays(out _, out _); KeyboardSender.ReleaseModifiers(); SettingsStore.Save(_settings); _hotkeys?.Dispose(); _tray?.Dispose();
+        _recorder?.Dispose(); _sequenceRecorder?.Dispose(); ReadPlaybackDelays(out _, out _, out _, out _); KeyboardSender.ReleaseModifiers(); SettingsStore.Save(_settings); _hotkeys?.Dispose(); _tray?.Dispose();
     }
 }
 
