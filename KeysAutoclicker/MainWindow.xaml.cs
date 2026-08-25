@@ -10,7 +10,7 @@ using TextBox = System.Windows.Controls.TextBox;
 namespace KeysAutoclicker;
 public partial class MainWindow : Window
 {
-    AppSettings _settings = new(); GlobalHotkeys? _hotkeys; TrayStatusIcon? _tray; ShortcutRecorder? _recorder; SequenceRecorder? _sequenceRecorder; Macro? _recordingMacro, _recordingTarget; int _recordedCount; bool _recordingPaused, _allowClose; CancellationTokenSource? _playbackCancellation; readonly SemaphoreSlim _runner = new(1, 1);
+    AppSettings _settings = new(); GlobalHotkeys? _hotkeys; TrayStatusIcon? _tray; ShortcutRecorder? _recorder; SequenceRecorder? _sequenceRecorder; Macro? _recordingMacro, _recordingTarget; ActionStep? _draggingAction; System.Windows.Point _dragStart; System.Windows.Documents.AdornerLayer? _dragLayer; ActionDragAdorner? _dragPreview; FrameworkElement? _dragRow; System.Windows.Controls.Border? _insertionRow; int _recordedCount; bool _recordingPaused, _allowClose; CancellationTokenSource? _playbackCancellation; readonly SemaphoreSlim _runner = new(1, 1);
     public ObservableCollection<Profile> Profiles => _settings.Profiles;
     public Profile? SelectedProfile { get; set; }
     public MainWindow() => InitializeComponent();
@@ -136,6 +136,65 @@ public partial class MainWindow : Window
     void DeleteAction_Click(object s, RoutedEventArgs e) { if ((s as FrameworkElement)?.DataContext is ActionStep a && FindMacro(a) is { } m) m.Actions.Remove(a); }
     void DuplicateAction_Click(object s, RoutedEventArgs e) { if ((s as FrameworkElement)?.DataContext is ActionStep a && FindMacro(a) is { } m) m.Actions.Insert(m.Actions.IndexOf(a)+1,a.Clone()); }
     void MoveAction_Click(object s, RoutedEventArgs e) { if ((s as FrameworkElement)?.DataContext is not ActionStep a || (s as Button)?.Tag is not string d || FindMacro(a) is not { } m) return; var i=m.Actions.IndexOf(a); var to=d=="Up"?i-1:i+1; if(to>=0&&to<m.Actions.Count)m.Actions.Move(i,to); }
+    void DragGrip_MouseLeftButtonDown(object s, MouseButtonEventArgs e)
+    {
+        if ((s as FrameworkElement)?.DataContext is not ActionStep action) return;
+        _draggingAction = action; _dragStart = e.GetPosition(this); e.Handled = true;
+    }
+    void DragGrip_MouseMove(object s, System.Windows.Input.MouseEventArgs e)
+    {
+        if (_draggingAction is null || e.LeftButton != MouseButtonState.Pressed) return;
+        var position = e.GetPosition(this);
+        if (Math.Abs(position.X - _dragStart.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(position.Y - _dragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        _dragRow = FindActionRow(s as FrameworkElement, _draggingAction); _dragLayer = _dragRow is null ? null : System.Windows.Documents.AdornerLayer.GetAdornerLayer(_dragRow);
+        if (_dragRow is not null && _dragLayer is not null) { _dragPreview = new ActionDragAdorner(this, _dragRow); _dragPreview.Move(position); _dragLayer.Add(_dragPreview); _dragRow.Opacity = 0.28; }
+        try { DragDrop.DoDragDrop((DependencyObject)s, new System.Windows.DataObject(typeof(ActionStep), _draggingAction), System.Windows.DragDropEffects.Move); }
+        finally { if (_dragPreview is not null && _dragLayer is not null) _dragLayer.Remove(_dragPreview); if (_dragRow is not null) _dragRow.Opacity = 1; ClearInsertion(); _dragPreview = null; _dragLayer = null; _dragRow = null; _draggingAction = null; }
+    }
+    void Action_DragOver(object s, System.Windows.DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(typeof(ActionStep)) ? System.Windows.DragDropEffects.Move : System.Windows.DragDropEffects.None; _dragPreview?.Move(e.GetPosition(this));
+        if (e.Effects == System.Windows.DragDropEffects.Move && e.Data.GetData(typeof(ActionStep)) is ActionStep source && (s as System.Windows.Controls.Border) is { DataContext: ActionStep target } targetRow && source != target && FindMacro(source) is { } macro && FindItemsControl(targetRow) is { } items)
+        {
+            var sourceIndex = macro.Actions.IndexOf(source); var targetIndex = macro.Actions.IndexOf(target); var insertAfter = e.GetPosition(targetRow).Y > targetRow.ActualHeight / 2; var destination = targetIndex + (insertAfter ? 1 : 0); if (sourceIndex < destination) destination--;
+            ShowInsertion(targetRow, insertAfter); if (destination != sourceIndex) MoveActionWithAnimation(items, macro, source, destination);
+        }
+        e.Handled = true;
+    }
+    static FrameworkElement? FindActionRow(FrameworkElement? child, ActionStep action)
+    {
+        while (child is not null) { if (child.DataContext == action && child is System.Windows.Controls.Border border && border.AllowDrop) return border; child = System.Windows.Media.VisualTreeHelper.GetParent(child) as FrameworkElement; }
+        return null;
+    }
+    void Action_Drop(object s, System.Windows.DragEventArgs e)
+    {
+        if (e.Data.GetData(typeof(ActionStep)) is not ActionStep source || FindMacro(source) is not { } macro || !macro.Actions.Contains(source)) return;
+        if (FindItemsControl(s as FrameworkElement) is { } items) AnimateActionRows(items, CaptureActionPositions(items, macro));
+        ClearInsertion();
+        e.Handled = true;
+    }
+    static System.Windows.Controls.ItemsControl? FindItemsControl(FrameworkElement? child)
+    {
+        while (child is not null) { if (child is System.Windows.Controls.ItemsControl items && items.ItemsSource is not null) return items; child = System.Windows.Media.VisualTreeHelper.GetParent(child) as FrameworkElement; }
+        return null;
+    }
+    static Dictionary<ActionStep, double> CaptureActionPositions(System.Windows.Controls.ItemsControl items, Macro macro)
+    {
+        var positions = new Dictionary<ActionStep, double>(); foreach (var action in macro.Actions) if (items.ItemContainerGenerator.ContainerFromItem(action) is UIElement row) positions[action] = row.TransformToAncestor(items).Transform(new System.Windows.Point()).Y; return positions;
+    }
+    void MoveActionWithAnimation(System.Windows.Controls.ItemsControl items, Macro macro, ActionStep source, int destination)
+    {
+        var before = CaptureActionPositions(items, macro); macro.Actions.Move(macro.Actions.IndexOf(source), destination); Dispatcher.BeginInvoke(() => AnimateActionRows(items, before), System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+    static void AnimateActionRows(System.Windows.Controls.ItemsControl items, Dictionary<ActionStep, double> before)
+    {
+        foreach (var pair in before) if (items.ItemContainerGenerator.ContainerFromItem(pair.Key) is UIElement row) { var now = row.TransformToAncestor(items).Transform(new System.Windows.Point()).Y; var delta = pair.Value - now; if (Math.Abs(delta) < 0.5) continue; var transform = new System.Windows.Media.TranslateTransform(); row.RenderTransform = transform; transform.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, new System.Windows.Media.Animation.DoubleAnimation(delta, 0, TimeSpan.FromMilliseconds(180)) { EasingFunction = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } }); }
+    }
+    void ShowInsertion(System.Windows.Controls.Border row, bool after)
+    {
+        if (_insertionRow == row) return; ClearInsertion(); _insertionRow = row; row.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(82, 151, 255)); row.BorderThickness = after ? new Thickness(0, 0, 0, 3) : new Thickness(0, 3, 0, 0);
+    }
+    void ClearInsertion() { if (_insertionRow is null) return; _insertionRow.BorderBrush = System.Windows.Media.Brushes.Transparent; _insertionRow.BorderThickness = new Thickness(0); _insertionRow = null; }
     Macro? FindMacro(ActionStep step) => Profiles.SelectMany(p=>p.Macros).FirstOrDefault(m=>m.Actions.Contains(step));
     void RefreshRegistry()
     {
@@ -172,5 +231,20 @@ public partial class MainWindow : Window
     {
         if (!_allowClose) { e.Cancel = true; Hide(); StatusText.Text = "Click Away is running in the tray."; return; }
         _recorder?.Dispose(); _sequenceRecorder?.Dispose(); ReadPlaybackDelays(out _, out _); KeyboardSender.ReleaseModifiers(); SettingsStore.Save(_settings); _hotkeys?.Dispose(); _tray?.Dispose();
+    }
+}
+
+sealed class ActionDragAdorner : System.Windows.Documents.Adorner
+{
+    readonly System.Windows.Media.ImageBrush _snapshot; readonly System.Windows.Size _size; System.Windows.Point _position;
+    public ActionDragAdorner(System.Windows.UIElement adornedElement, System.Windows.UIElement row) : base(adornedElement)
+    {
+        _size = row.RenderSize; var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(Math.Max(1, (int)Math.Ceiling(_size.Width)), Math.Max(1, (int)Math.Ceiling(_size.Height)), 96, 96, System.Windows.Media.PixelFormats.Pbgra32); bitmap.Render(row); _snapshot = new System.Windows.Media.ImageBrush(bitmap) { Stretch = System.Windows.Media.Stretch.Fill }; IsHitTestVisible = false;
+    }
+    public void Move(System.Windows.Point position) { _position = position; InvalidateVisual(); }
+    protected override void OnRender(System.Windows.Media.DrawingContext drawingContext)
+    {
+        var rect = new System.Windows.Rect(_position.X - _size.Width / 2, _position.Y - _size.Height / 2, _size.Width, _size.Height); var lifted = new System.Windows.Rect(rect.X - 3, rect.Y - 3, rect.Width + 6, rect.Height + 6);
+        drawingContext.PushOpacity(0.20); drawingContext.DrawRoundedRectangle(System.Windows.Media.Brushes.Black, null, new System.Windows.Rect(lifted.X + 5, lifted.Y + 8, lifted.Width, lifted.Height), 12, 12); drawingContext.Pop(); drawingContext.PushOpacity(0.98); drawingContext.DrawRoundedRectangle(_snapshot, new System.Windows.Media.Pen(new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(104, 170, 255)), 2), lifted, 10, 10); drawingContext.Pop();
     }
 }
