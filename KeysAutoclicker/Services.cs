@@ -86,16 +86,19 @@ public sealed class ShortcutRecorder : IDisposable
 
 public sealed class SequenceRecorder : IDisposable
 {
-    const int HookType = 13, KeyDown = 0x0100, SysKeyDown = 0x0104, KeyUp = 0x0101, SysKeyUp = 0x0105, Injected = 0x10;
-    readonly Action<string> _recorded; readonly Action _stopped; readonly Func<string, bool>? _ignore; readonly bool _suppress; readonly HookProc _callback; readonly HashSet<uint> _down = new(); IntPtr _hook;
+    const int HookType = 13, MouseHookType = 14, KeyDown = 0x0100, SysKeyDown = 0x0104, KeyUp = 0x0101, SysKeyUp = 0x0105, Injected = 0x10;
+    const int MouseMove = 0x0200, LeftDown = 0x0201, RightDown = 0x0204, MiddleDown = 0x0207, Wheel = 0x020A;
+    readonly Action<string> _recorded; readonly Action _stopped; readonly Func<string, bool>? _ignore; readonly bool _suppress; readonly HookProc _callback, _mouseCallback; readonly HashSet<uint> _down = new(); IntPtr _hook, _mouseHook; int _lastX = int.MinValue, _lastY; long _lastMoveTick;
     delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);
     [StructLayout(LayoutKind.Sequential)] struct Kbd { public uint vkCode, scanCode, flags, time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)] struct Point { public int x, y; }
+    [StructLayout(LayoutKind.Sequential)] struct Mouse { public Point pt; public uint mouseData, flags, time; public IntPtr dwExtraInfo; }
     [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SetWindowsHookEx(int type, HookProc callback, IntPtr module, uint threadId);
     [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
     [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string? name);
-    public SequenceRecorder(Action<string> recorded, Action stopped, bool suppress = true, Func<string, bool>? ignore = null) { _recorded = recorded; _stopped = stopped; _suppress = suppress; _ignore = ignore; _callback = Hook; _hook = SetWindowsHookEx(HookType, _callback, GetModuleHandle(null), 0); }
-    public bool IsActive => _hook != IntPtr.Zero;
+    public SequenceRecorder(Action<string> recorded, Action stopped, bool suppress = true, Func<string, bool>? ignore = null) { _recorded = recorded; _stopped = stopped; _suppress = suppress; _ignore = ignore; _callback = Hook; _mouseCallback = MouseHook; _hook = SetWindowsHookEx(HookType, _callback, GetModuleHandle(null), 0); _mouseHook = SetWindowsHookEx(MouseHookType, _mouseCallback, GetModuleHandle(null), 0); }
+    public bool IsActive => _hook != IntPtr.Zero && _mouseHook != IntPtr.Zero;
     IntPtr Hook(int code, IntPtr message, IntPtr data)
     {
         if (code < 0 || _hook == IntPtr.Zero) return CallNextHookEx(_hook, code, message, data);
@@ -110,6 +113,23 @@ public sealed class SequenceRecorder : IDisposable
         return Next(code, message, data);
     }
     IntPtr Next(int code, IntPtr message, IntPtr data) => _suppress ? new IntPtr(1) : CallNextHookEx(_hook, code, message, data);
+    IntPtr MouseHook(int code, IntPtr message, IntPtr data)
+    {
+        if (code < 0 || _mouseHook == IntPtr.Zero) return CallNextHookEx(_mouseHook, code, message, data);
+        var info = Marshal.PtrToStructure<Mouse>(data); if ((info.flags & 1) != 0) return CallNextHookEx(_mouseHook, code, message, data);
+        var type = message.ToInt32(); string? value = type switch
+        {
+            LeftDown => $"MouseLeftClick:{info.pt.x},{info.pt.y}", RightDown => $"MouseRightClick:{info.pt.x},{info.pt.y}", MiddleDown => $"MouseMiddleClick:{info.pt.x},{info.pt.y}",
+            Wheel => $"MouseWheel:{(short)(info.mouseData >> 16)}", _ => null
+        };
+        if (type == MouseMove)
+        {
+            var now = Environment.TickCount64;
+            if (now - _lastMoveTick >= 15 && (Math.Abs(info.pt.x - _lastX) + Math.Abs(info.pt.y - _lastY) >= 3)) { _lastX = info.pt.x; _lastY = info.pt.y; _lastMoveTick = now; value = $"MouseMove:{info.pt.x},{info.pt.y}"; }
+        }
+        if (value is not null) _recorded(value);
+        return CallNextHookEx(_mouseHook, code, message, data);
+    }
     ModifierKeys Modifiers()
     {
         ModifierKeys result = ModifierKeys.None;
@@ -119,7 +139,7 @@ public sealed class SequenceRecorder : IDisposable
         if (_down.Overlaps(new uint[] { 0x5B, 0x5C })) result |= ModifierKeys.Windows;
         return result;
     }
-    public void Dispose() { if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; } }
+    public void Dispose() { if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; } if (_mouseHook != IntPtr.Zero) { UnhookWindowsHookEx(_mouseHook); _mouseHook = IntPtr.Zero; } }
 }
 
 public sealed class GlobalHotkeys : IDisposable
@@ -174,6 +194,26 @@ public static class KeyboardSender
         Diagnostics.Write($"SENDINPUT action={notation} sent={result}/{inputs.Count} error={Marshal.GetLastWin32Error()}");
     }
     public static void ReleaseModifiers() => SendInput(8, new[] { Input(Key.LeftCtrl, true), Input(Key.RightCtrl, true), Input(Key.LeftAlt, true), Input(Key.RightAlt, true), Input(Key.LeftShift, true), Input(Key.RightShift, true), Input(Key.LWin, true), Input(Key.RWin, true) }, Marshal.SizeOf<INPUT>());
+}
+
+public static class MouseSender
+{
+    const uint LeftDown = 0x0002, LeftUp = 0x0004, RightDown = 0x0008, RightUp = 0x0010, MiddleDown = 0x0020, MiddleUp = 0x0040, Wheel = 0x0800;
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+    public static void Execute(ActionStep step)
+    {
+        if (step.Kind == "Mouse Move") { if (TryPoint(step.Value, out var x, out var y)) SetCursorPos(x, y); return; }
+        if (step.Kind.EndsWith("Click") && TryPoint(step.Value, out var clickX, out var clickY)) SetCursorPos(clickX, clickY);
+        if (step.Kind == "Mouse Left Click") mouse_event(LeftDown | LeftUp, 0, 0, 0, UIntPtr.Zero);
+        else if (step.Kind == "Mouse Right Click") mouse_event(RightDown | RightUp, 0, 0, 0, UIntPtr.Zero);
+        else if (step.Kind == "Mouse Middle Click") mouse_event(MiddleDown | MiddleUp, 0, 0, 0, UIntPtr.Zero);
+        else if (step.Kind == "Mouse Wheel" && int.TryParse(step.Value, out var delta)) mouse_event(Wheel, 0, 0, unchecked((uint)delta), UIntPtr.Zero);
+    }
+    static bool TryPoint(string text, out int x, out int y)
+    {
+        x = y = 0; var parts = text.Split(','); return parts.Length == 2 && int.TryParse(parts[0], out x) && int.TryParse(parts[1], out y);
+    }
 }
 
 public sealed class TrayStatusIcon : IDisposable

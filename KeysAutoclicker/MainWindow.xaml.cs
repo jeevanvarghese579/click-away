@@ -62,7 +62,7 @@ public partial class MainWindow : Window
         StatusText.Text = "Recording actions — press Esc to stop. Keys will not affect other apps while recording.";
         _sequenceRecorder = new SequenceRecorder(text => Dispatcher.BeginInvoke(() =>
         {
-            macro.Actions.Add(new ActionStep { Value = text }); _recordedCount++;
+            macro.Actions.Add(CreateRecordedStep(text)); _recordedCount++;
             StatusText.Text = $"Recording actions — {_recordedCount} captured. Press Esc to stop.";
         }), () => Dispatcher.BeginInvoke(() => { StatusText.Text = $"Sequence recording complete — {_recordedCount} action(s) added."; _sequenceRecorder = null; }));
         if (!_sequenceRecorder.IsActive) StatusText.Text = "Could not start sequence recording.";
@@ -79,7 +79,7 @@ public partial class MainWindow : Window
         _sequenceRecorder = new SequenceRecorder(text => Dispatcher.BeginInvoke(() =>
         {
             if (_recordingPaused) return;
-            macro.Actions.Add(new ActionStep { Value = text }); _recordedCount++;
+            macro.Actions.Add(CreateRecordedStep(text)); _recordedCount++;
             StatusText.Text = $"Recording - {_recordedCount} event(s). {DisplayShortcut(_settings.StartStopRecordingShortcut)} to stop.";
         }), () => Dispatcher.BeginInvoke(() => FinishGlobalRecording(false)), suppress: false, ignore: IsRecordingControlShortcut);
         if (!_sequenceRecorder.IsActive) { SelectedProfile.Macros.Remove(macro); _recordingMacro = null; _sequenceRecorder = null; StatusText.Text = "Could not start recording."; return; }
@@ -105,6 +105,19 @@ public partial class MainWindow : Window
     void SaveRecordingShortcuts() { _settings.StartStopRecordingShortcut = StartStopShortcutInput.Text.Trim(); _settings.PauseResumeRecordingShortcut = PauseResumeShortcutInput.Text.Trim(); _settings.EmergencyStopShortcut = EmergencyStopShortcutInput.Text.Trim(); RefreshRegistry(); }
     static string DisplayShortcut(string text) => text.Replace("+", " + ");
     bool IsRecordingControlShortcut(string text) => string.Equals(text, _settings.StartStopRecordingShortcut, StringComparison.OrdinalIgnoreCase) || string.Equals(text, _settings.PauseResumeRecordingShortcut, StringComparison.OrdinalIgnoreCase) || string.Equals(text, _settings.EmergencyStopShortcut, StringComparison.OrdinalIgnoreCase);
+    static ActionStep CreateRecordedStep(string text)
+    {
+        var split = text.Split(':', 2); var value = split.Length == 2 ? split[1] : "";
+        return split[0] switch
+        {
+            "MouseMove" => new ActionStep { Kind = "Mouse Move", Value = value },
+            "MouseLeftClick" => new ActionStep { Kind = "Mouse Left Click", Value = value },
+            "MouseRightClick" => new ActionStep { Kind = "Mouse Right Click", Value = value },
+            "MouseMiddleClick" => new ActionStep { Kind = "Mouse Middle Click", Value = value },
+            "MouseWheel" => new ActionStep { Kind = "Mouse Wheel", Value = value },
+            _ => new ActionStep { Value = text }
+        };
+    }
     void AddAction_Click(object s, RoutedEventArgs e) { if ((s as FrameworkElement)?.DataContext is Macro m) m.Actions.Add(new ActionStep()); }
     void AddDelay_Click(object s, RoutedEventArgs e) { if ((s as FrameworkElement)?.DataContext is Macro m) m.Actions.Add(new ActionStep { Kind="Delay" }); }
     void DeleteAction_Click(object s, RoutedEventArgs e) { if ((s as FrameworkElement)?.DataContext is ActionStep a && FindMacro(a) is { } m) m.Actions.Remove(a); }
@@ -128,7 +141,7 @@ public partial class MainWindow : Window
     {
         if (!_settings.MasterEnabled || !Profiles.Any(p=>p.Enabled&&p.Macros.Contains(macro)&&macro.Enabled)) return;
         if (!ReadPlaybackDelays(out var keyDelay, out var shortcutDelay)) return;
-        await _runner.WaitAsync(); _playbackCancellation = new(); try { Diagnostics.Write($"MACRO START name={macro.Name}"); await Dispatcher.InvokeAsync(()=>StatusText.Text=$"Running {macro.Name}..."); foreach(var step in macro.Actions.ToList()) { _playbackCancellation.Token.ThrowIfCancellationRequested(); if(step.Kind=="Delay") await Task.Delay(step.DelayMs, _playbackCancellation.Token); else for(var i=0;i<step.Repeat;i++) { _playbackCancellation.Token.ThrowIfCancellationRequested(); KeyboardSender.Press(step.Value); await Task.Delay(step.Value.Contains('+') ? shortcutDelay : keyDelay, _playbackCancellation.Token); } } Diagnostics.Write($"MACRO COMPLETE name={macro.Name}"); await Dispatcher.InvokeAsync(()=>StatusText.Text=$"Completed {macro.Name}."); } catch (OperationCanceledException) { await Dispatcher.InvokeAsync(()=>StatusText.Text="Macro stopped safely."); } catch (Exception ex) { Diagnostics.Write($"MACRO ERROR {ex}"); KeyboardSender.ReleaseModifiers(); await Dispatcher.InvokeAsync(()=>StatusText.Text="Macro stopped safely."); } finally { KeyboardSender.ReleaseModifiers(); _playbackCancellation?.Dispose(); _playbackCancellation = null; _runner.Release(); }
+        await _runner.WaitAsync(); _playbackCancellation = new(); try { Diagnostics.Write($"MACRO START name={macro.Name}"); await Dispatcher.InvokeAsync(()=>StatusText.Text=$"Running {macro.Name}..."); foreach(var step in macro.Actions.ToList()) { _playbackCancellation.Token.ThrowIfCancellationRequested(); if(step.Kind=="Delay") await Task.Delay(step.DelayMs, _playbackCancellation.Token); else for(var i=0;i<step.Repeat;i++) { _playbackCancellation.Token.ThrowIfCancellationRequested(); if (step.Kind.StartsWith("Mouse", StringComparison.Ordinal)) MouseSender.Execute(step); else KeyboardSender.Press(step.Value); await Task.Delay(step.Value.Contains('+') ? shortcutDelay : keyDelay, _playbackCancellation.Token); } } Diagnostics.Write($"MACRO COMPLETE name={macro.Name}"); await Dispatcher.InvokeAsync(()=>StatusText.Text=$"Completed {macro.Name}."); } catch (OperationCanceledException) { await Dispatcher.InvokeAsync(()=>StatusText.Text="Macro stopped safely."); } catch (Exception ex) { Diagnostics.Write($"MACRO ERROR {ex}"); KeyboardSender.ReleaseModifiers(); await Dispatcher.InvokeAsync(()=>StatusText.Text="Macro stopped safely."); } finally { KeyboardSender.ReleaseModifiers(); _playbackCancellation?.Dispose(); _playbackCancellation = null; _runner.Release(); }
     }
     void EmergencyStop() { _playbackCancellation?.Cancel(); KeyboardSender.ReleaseModifiers(); StatusText.Text = "Emergency stop - playback cancelled."; }
     bool ReadPlaybackDelays(out int keyDelay, out int shortcutDelay)
