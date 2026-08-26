@@ -84,7 +84,7 @@ public sealed class ShortcutRecorder : IDisposable
     public void Dispose() { if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; } }
 }
 
-public readonly record struct RecordedInput(long Sequence, string Value);
+public readonly record struct RecordedInput(long Sequence, long Timestamp, string Value);
 
 public sealed class SequenceRecorder : IDisposable
 {
@@ -132,7 +132,7 @@ public sealed class SequenceRecorder : IDisposable
         if (value is not null) Emit(value);
         return CallNextHookEx(_mouseHook, code, message, data);
     }
-    void Emit(string value) => _recorded(new RecordedInput(Interlocked.Increment(ref _sequence), value));
+    void Emit(string value) => _recorded(new RecordedInput(Interlocked.Increment(ref _sequence), Environment.TickCount64, value));
     ModifierKeys Modifiers()
     {
         ModifierKeys result = ModifierKeys.None;
@@ -209,6 +209,7 @@ public static class MouseSender
         if (step.Kind == "Mouse Move") { if (TryPoint(step.Value, out var x, out var y)) SetCursorPos(x, y); return; }
         if (step.Kind.EndsWith("Click") && TryPoint(step.Value, out var clickX, out var clickY)) SetCursorPos(clickX, clickY);
         if (step.Kind == "Mouse Left Click") mouse_event(LeftDown | LeftUp, 0, 0, 0, UIntPtr.Zero);
+        else if (step.Kind == "Mouse Double Click") { mouse_event(LeftDown | LeftUp, 0, 0, 0, UIntPtr.Zero); mouse_event(LeftDown | LeftUp, 0, 0, 0, UIntPtr.Zero); }
         else if (step.Kind == "Mouse Right Click") mouse_event(RightDown | RightUp, 0, 0, 0, UIntPtr.Zero);
         else if (step.Kind == "Mouse Middle Click") mouse_event(MiddleDown | MiddleUp, 0, 0, 0, UIntPtr.Zero);
         else if (step.Kind == "Mouse Wheel" && int.TryParse(step.Value, out var delta)) mouse_event(Wheel, 0, 0, unchecked((uint)delta), UIntPtr.Zero);

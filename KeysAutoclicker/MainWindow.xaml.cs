@@ -10,7 +10,7 @@ using TextBox = System.Windows.Controls.TextBox;
 namespace KeysAutoclicker;
 public partial class MainWindow : Window
 {
-    AppSettings _settings = new(); GlobalHotkeys? _hotkeys; TrayStatusIcon? _tray; ShortcutRecorder? _recorder; SequenceRecorder? _sequenceRecorder; Macro? _recordingMacro, _recordingTarget; ActionStep? _draggingAction; System.Windows.Point _dragStart; System.Windows.Documents.AdornerLayer? _dragLayer; ActionDragAdorner? _dragPreview; FrameworkElement? _dragRow; System.Windows.Controls.Border? _insertionRow; readonly SortedDictionary<long, (RecordedInput Input, bool Paused)> _pendingRecordedInputs = new(); long _nextRecordedSequence; int _recordedCount; bool _recordingPaused, _allowClose; CancellationTokenSource? _playbackCancellation; readonly SemaphoreSlim _runner = new(1, 1);
+    AppSettings _settings = new(); GlobalHotkeys? _hotkeys; TrayStatusIcon? _tray; ShortcutRecorder? _recorder; SequenceRecorder? _sequenceRecorder; Macro? _recordingMacro, _recordingTarget; ActionStep? _draggingAction; System.Windows.Point _dragStart; System.Windows.Documents.AdornerLayer? _dragLayer; ActionDragAdorner? _dragPreview; FrameworkElement? _dragRow; System.Windows.Controls.Border? _insertionRow; readonly SortedDictionary<long, (RecordedInput Input, bool Paused)> _pendingRecordedInputs = new(); RecordedInput? _lastLeftClickInput; long _nextRecordedSequence; int _recordedCount; bool _recordingPaused, _allowClose; CancellationTokenSource? _playbackCancellation; readonly SemaphoreSlim _runner = new(1, 1);
     public ObservableCollection<Profile> Profiles => _settings.Profiles;
     public Profile? SelectedProfile { get; set; }
     public MainWindow() => InitializeComponent();
@@ -73,7 +73,7 @@ public partial class MainWindow : Window
     void CancelRecording_Click(object s, RoutedEventArgs e) => FinishGlobalRecording(true);
     void BeginRecording(Macro macro)
     {
-        _recordingMacro = macro; _recordingTarget = macro; _recorder?.Dispose(); _sequenceRecorder?.Dispose(); _recordedCount = 0; _recordingPaused = false; _nextRecordedSequence = 1; _pendingRecordedInputs.Clear();
+        _recordingMacro = macro; _recordingTarget = macro; _recorder?.Dispose(); _sequenceRecorder?.Dispose(); _recordedCount = 0; _recordingPaused = false; _nextRecordedSequence = 1; _lastLeftClickInput = null; _pendingRecordedInputs.Clear();
         _sequenceRecorder = new SequenceRecorder(input => { var paused = _recordingPaused; Dispatcher.BeginInvoke(() => QueueRecordedInput(macro, input, paused)); }, () => Dispatcher.BeginInvoke(() => FinishGlobalRecording(false)), suppress: false, ignore: IsRecordingControlShortcut);
         if (!_sequenceRecorder.IsActive) { _recordingMacro = null; _sequenceRecorder = null; StatusText.Text = "Could not start recording."; return; }
         _tray?.SetRecording(true); StatusText.Text = $"Recording - 0 event(s). {DisplayShortcut(_settings.StartStopRecordingShortcut)} to stop.";
@@ -83,11 +83,18 @@ public partial class MainWindow : Window
         _pendingRecordedInputs[input.Sequence] = (input, paused);
         while (_pendingRecordedInputs.Remove(_nextRecordedSequence, out var queued))
         {
-            if (!queued.Paused) { macro.Actions.Add(CreateRecordedStep(queued.Input.Value)); _recordedCount++; }
+            if (!queued.Paused)
+            {
+                if (IsDoubleClick(_lastLeftClickInput, queued.Input) && macro.Actions.LastOrDefault() is { Kind: "Mouse Left Click" } previous) previous.Kind = "Mouse Double Click";
+                else { macro.Actions.Add(CreateRecordedStep(queued.Input.Value)); _recordedCount++; }
+                if (queued.Input.Value.StartsWith("MouseLeftClick:", StringComparison.Ordinal)) _lastLeftClickInput = queued.Input;
+            }
             _nextRecordedSequence++;
         }
         if (!_recordingPaused) StatusText.Text = $"Recording - {_recordedCount} event(s). {DisplayShortcut(_settings.StartStopRecordingShortcut)} to stop.";
     }
+    static bool IsDoubleClick(RecordedInput? previous, RecordedInput current) => previous is { } prior && prior.Value.StartsWith("MouseLeftClick:", StringComparison.Ordinal) && current.Value.StartsWith("MouseLeftClick:", StringComparison.Ordinal) && current.Timestamp - prior.Timestamp <= System.Windows.Forms.SystemInformation.DoubleClickTime && SameMousePoint(prior.Value, current.Value);
+    static bool SameMousePoint(string first, string second) => first[(first.IndexOf(':') + 1)..] == second[(second.IndexOf(':') + 1)..];
     void ToggleGlobalRecording()
     {
         if (_sequenceRecorder is not null) { FinishGlobalRecording(false); return; }

@@ -8,7 +8,7 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
 
         System.Windows.MessageBox.Show(
-            "Click Away v1.7.2.2\n\nDeveloped By Jeevan Varghese, St. Gemma's GHSS Malappuram.\n\n" +
+            "Click Away v1.7.2.3\n\nDeveloped By Jeevan Varghese, St. Gemma's GHSS Malappuram.\n\n" +
             "Visit itsjeevanvarghese.web.app for more softwares.",
             "About Click Away",
             MessageBoxButton.OK,
