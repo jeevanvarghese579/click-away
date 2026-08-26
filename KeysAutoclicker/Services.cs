@@ -84,11 +84,13 @@ public sealed class ShortcutRecorder : IDisposable
     public void Dispose() { if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; } }
 }
 
+public readonly record struct RecordedInput(long Sequence, string Value);
+
 public sealed class SequenceRecorder : IDisposable
 {
     const int HookType = 13, MouseHookType = 14, KeyDown = 0x0100, SysKeyDown = 0x0104, KeyUp = 0x0101, SysKeyUp = 0x0105, Injected = 0x10;
     const int MouseMove = 0x0200, LeftDown = 0x0201, RightDown = 0x0204, MiddleDown = 0x0207, Wheel = 0x020A;
-    readonly Action<string> _recorded; readonly Action _stopped; readonly Func<string, bool>? _ignore; readonly bool _suppress; readonly HookProc _callback, _mouseCallback; readonly HashSet<uint> _down = new(); IntPtr _hook, _mouseHook; int _lastX = int.MinValue, _lastY; long _lastMoveTick;
+    readonly Action<RecordedInput> _recorded; readonly Action _stopped; readonly Func<string, bool>? _ignore; readonly bool _suppress; readonly HookProc _callback, _mouseCallback; readonly HashSet<uint> _down = new(); IntPtr _hook, _mouseHook; int _lastX = int.MinValue, _lastY; long _lastMoveTick, _sequence;
     delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);
     [StructLayout(LayoutKind.Sequential)] struct Kbd { public uint vkCode, scanCode, flags, time; public IntPtr dwExtraInfo; }
     [StructLayout(LayoutKind.Sequential)] struct Point { public int x, y; }
@@ -97,7 +99,7 @@ public sealed class SequenceRecorder : IDisposable
     [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
     [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string? name);
-    public SequenceRecorder(Action<string> recorded, Action stopped, bool suppress = true, Func<string, bool>? ignore = null) { _recorded = recorded; _stopped = stopped; _suppress = suppress; _ignore = ignore; _callback = Hook; _mouseCallback = MouseHook; _hook = SetWindowsHookEx(HookType, _callback, GetModuleHandle(null), 0); _mouseHook = SetWindowsHookEx(MouseHookType, _mouseCallback, GetModuleHandle(null), 0); }
+    public SequenceRecorder(Action<RecordedInput> recorded, Action stopped, bool suppress = true, Func<string, bool>? ignore = null) { _recorded = recorded; _stopped = stopped; _suppress = suppress; _ignore = ignore; _callback = Hook; _mouseCallback = MouseHook; _hook = SetWindowsHookEx(HookType, _callback, GetModuleHandle(null), 0); _mouseHook = SetWindowsHookEx(MouseHookType, _mouseCallback, GetModuleHandle(null), 0); }
     public bool IsActive => _hook != IntPtr.Zero && _mouseHook != IntPtr.Zero;
     IntPtr Hook(int code, IntPtr message, IntPtr data)
     {
@@ -109,7 +111,7 @@ public sealed class SequenceRecorder : IDisposable
         if (info.vkCode == 0x1B) { Dispose(); _stopped(); return Next(code, message, data); } // Esc ends a sequence
         if (!_down.Add(info.vkCode)) return Next(code, message, data);
         var text = KeyNotation.Format(KeyInterop.KeyFromVirtualKey((int)info.vkCode), Modifiers());
-        if (!string.IsNullOrEmpty(text) && !(_ignore?.Invoke(text) ?? false)) _recorded(text);
+        if (!string.IsNullOrEmpty(text) && !(_ignore?.Invoke(text) ?? false)) Emit(text);
         return Next(code, message, data);
     }
     IntPtr Next(int code, IntPtr message, IntPtr data) => _suppress ? new IntPtr(1) : CallNextHookEx(_hook, code, message, data);
@@ -127,9 +129,10 @@ public sealed class SequenceRecorder : IDisposable
             var now = Environment.TickCount64;
             if (now - _lastMoveTick >= 15 && (Math.Abs(info.pt.x - _lastX) + Math.Abs(info.pt.y - _lastY) >= 3)) { _lastX = info.pt.x; _lastY = info.pt.y; _lastMoveTick = now; value = $"MouseMove:{info.pt.x},{info.pt.y}"; }
         }
-        if (value is not null) _recorded(value);
+        if (value is not null) Emit(value);
         return CallNextHookEx(_mouseHook, code, message, data);
     }
+    void Emit(string value) => _recorded(new RecordedInput(Interlocked.Increment(ref _sequence), value));
     ModifierKeys Modifiers()
     {
         ModifierKeys result = ModifierKeys.None;

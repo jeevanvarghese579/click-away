@@ -50,12 +50,12 @@ public sealed class AppSettings
 {
     public bool MasterEnabled { get; set; } = true;
     public bool DarkTheme { get; set; } = true;
-    public int NormalKeyDelayMs { get; set; } = 55;
-    public int ShortcutDelayMs { get; set; } = 100;
-    public int MouseMoveDelayMs { get; set; } = 15;
-    public int MouseClickDelayMs { get; set; } = 75;
-    public string StartStopRecordingShortcut { get; set; } = "Ctrl+Shift+F9";
-    public string PauseResumeRecordingShortcut { get; set; } = "Ctrl+Shift+F10";
-    public string EmergencyStopShortcut { get; set; } = "Ctrl+Shift+F12";
+    public int NormalKeyDelayMs { get; set; } = 100;
+    public int ShortcutDelayMs { get; set; } = 200;
+    public int MouseMoveSpeedPercent { get; set; } = 200;
+    public int MouseClickDelayMs { get; set; } = 500;
+    public string StartStopRecordingShortcut { get; set; } = "F9";
+    public string PauseResumeRecordingShortcut { get; set; } = "F10";
+    public string EmergencyStopShortcut { get; set; } = "F11";
     public ObservableCollection<Profile> Profiles { get; set; } = new();
 }
