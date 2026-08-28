@@ -28,13 +28,14 @@ public sealed class ActionStep : NotifyModel
 
 public sealed class Macro : NotifyModel
 {
-    string _name = "New shortcut", _trigger = "F1"; bool _enabled = true;
+    string _name = "New shortcut", _trigger = "F1"; bool _enabled = true; int _repeatCount = 1;
     public string Name { get => _name; set { _name = value; Changed(); } }
     public string Trigger { get => _trigger; set { _trigger = value; Changed(); } }
     public bool Enabled { get => _enabled; set { _enabled = value; Changed(); } }
+    public int RepeatCount { get => _repeatCount; set { _repeatCount = Math.Max(1, value); Changed(); } }
     public ObservableCollection<ActionStep> Actions { get; set; } = new();
     public string Summary => $"{Actions.Count} action{(Actions.Count == 1 ? "" : "s")}";
-    public Macro Clone() => new() { Name = Name + " copy", Trigger = "", Enabled = false, Actions = new ObservableCollection<ActionStep>(Actions.Select(x => x.Clone())) };
+    public Macro Clone() => new() { Name = Name + " copy", Trigger = "", Enabled = false, RepeatCount = RepeatCount, Actions = new ObservableCollection<ActionStep>(Actions.Select(x => x.Clone())) };
 }
 
 public sealed class Profile : NotifyModel
